@@ -1,0 +1,53 @@
+# === System Git Ignore for llama.cpp Launcher ===
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Large Model Files (CRITICAL: Prevents pushing gigabytes of GGUF to GitHub)
+*.gguf
+artifacts/models/
+artifacts/models/**/*
+
+# Compiled Binaries (llama.cpp build outputs)
+artifacts/llama.cpp/
+artifacts/llama.cpp/**/*
+
+# Execution Logs
+artifacts/logs/
+artifacts/logs/**/*
+_launcher_start.bat
+
+# OS files
+.DS_Store
+Thumbs.db

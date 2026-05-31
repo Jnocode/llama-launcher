@@ -1,0 +1,60 @@
+# 🦙 llama.cpp Expert Launcher (GUI)
+
+為 Windows 與 NVIDIA CUDA 環境打造的高質感 `llama.cpp` 專家級啟動器。本工具專為 Mixture of Experts (MoE，混合專家) 模型（如 Qwen 35B MoE 等）以及長上下文 (Long Context) 進行效能校準與優化，提供直覺且精確的資源估算與參數微調介面。
+
+---
+
+## 🌟 核心特色 (Key Features)
+
+### 1. 🧠 實體 CPU 核心智慧偵測
+*   **痛點解決**：以往啟動器僅偵測邏輯處理器數，若將線程 `-t` 設為超線程（Hyper-Threading）後的虛擬核心，將導致 CPU 推理效能發生嚴重雪崩。
+*   **優化方案**：底層透過 Windows `wmic` 繞過虛擬核心，**直接鎖定您的「實體 CPU 核心數」**，並自動填入為最優預設值，完美釋放 CPU 算力。
+*   **靜音機制**：新版 Win11 停用 `wmic` 產生的 CLI 警告已被徹底靜音重導向，若無 wmic 將自動且安全地退回至邏輯核心折半的 Python 原生安全預設值。
+
+### 2. 🎛️ 現代化「左右雙欄」排版 (Two-Column Layout)
+*   **版面重構**：告別傳統單列拉長的擁擠 UI。將參數依功能性質劃分為左側數值欄（Context, MoE, NGL, Threads）與右側快取/開關欄（K/V Caches, FA, MMAP, Reasoning）。
+*   **完美可讀性**：提示文字的折行寬度（`wraplength`）調寬，保證在中文化說明下 **100% 視覺無遮擋**，且主視窗比例完美收緊（`880x760`），按鈕再也不會被擠出畫面！
+
+### 3. 📈 即時資源與 KV Cache 估算
+*   基於實際硬體數據（顯存 VRAM、系統記憶體 DRAM）校準的資源預估公式。
+*   即時計算並呈現在設定 Context 下的 **KV Cache 顯存開銷**，並以 `🟢 安全`、`🟡 危險`、`🔴 爆顯存` 等燈號實時給予調參反饋。
+
+### 4. ⚡ 旋鈕與下拉選單微調 (Spinbox & Combobox)
+*   **上下文長度 (-c)**：升級為混合式 `Combobox` 下拉選單，內建 `8K` 至 `256K` 等標準常用選項，同時保留手動輸入任意數字的自由度，點選後預估立即連動。
+*   **數值欄位**：`MoE CPU 層數`、`GPU 層數 (-ngl)`、`CPU 執行緒 (-t)`、`批次執行緒 (-tb)` 全面引入 `ttk.Spinbox` (+1/-1 按鈕)，點擊微調箭頭即可毫秒級更新命令與資源預估。
+
+### 5. ⭐ 模式預設與收藏夾
+*   內建「日常聊天」、「Coding 輔助」、「長文分析」、「極限 256K」與「Benchmark」一鍵套用模式。
+*   支援將自訂的調參（含執行緒、快取設定）一鍵儲存至收藏夾，下次開啟自動讀取。
+
+---
+
+## 🚀 快速開始 (Quick Start)
+
+### 1. 準備環境
+本工具採用極其輕量的 `tkinter` 原生 GUI 架構，只需安裝系統偵測依賴 `psutil`：
+```bash
+# 1. 建立並啟用虛擬環境
+python -m venv .venv
+.venv\Scripts\activate
+
+# 2. 安裝核心偵測依賴
+pip install psutil
+```
+
+### 2. 執行啟動器
+```bash
+python artifacts/llama_launcher.py
+```
+
+---
+
+## 🛠️ 技術規格與路徑配置
+*   **預設 llama.cpp 伺服器路徑**：`D:\Workspace\artifacts\llama.cpp\b9060-cuda13.1\llama-server.exe`
+*   **預設模型載入目錄**：`D:\Workspace\artifacts\models`
+*   **配置檔 (收藏夾)**：`launcher_presets.json`
+
+---
+
+## 📄 授權條款
+本專案採用 MIT 授權條款。
