@@ -37,27 +37,50 @@ RELEASE_REPO = os.environ.get("LLAMA_LAUNCHER_RELEASE_REPO", "")
 # ==================== 硬體偵測 ====================
 def detect_hardware():
     """自動偵測系統硬體資訊"""
-    info = {"cpu": "Unknown", "ram_gb": 0, "gpu": "Unknown", "cuda": "Unknown", "vram_gb": 0}
-    
-    # CPU
+    info = {
+        "cpu": "Unknown",
+        "ram_gb": 0,
+        "gpu": "Unknown",
+        "cuda": "Unknown",
+        "vram_gb": 0,
+        "physical_cores": os.cpu_count() // 2 if os.cpu_count() else 8,
+    }
+
+    # CPU / 實體核心
     try:
-        info["cpu"] = os.popen("wmic cpu get Name | findstr /v Name").read().strip() or "Unknown"
+        cpu_cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name",
+        ]
+        cpu_res = subprocess.run(cpu_cmd, capture_output=True, text=True, timeout=4, encoding="utf-8", errors="ignore")
+        cpu_name = (cpu_res.stdout or "").strip()
+        if cpu_name:
+            info["cpu"] = cpu_name
     except Exception:
         pass
-    
+
+    try:
+        cores_cmd = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum",
+        ]
+        cores_res = subprocess.run(cores_cmd, capture_output=True, text=True, timeout=4, encoding="utf-8", errors="ignore")
+        cores_text = (cores_res.stdout or "").strip()
+        if cores_text.isdigit() and int(cores_text) > 0:
+            info["physical_cores"] = int(cores_text)
+    except Exception:
+        pass
+
     # RAM
     try:
         import psutil
         info["ram_gb"] = round(psutil.virtual_memory().total / (1024**3), 1)
     except ImportError:
-        try:
-            out = os.popen("wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /value").read()
-            for line in out.splitlines():
-                if line.startswith("TotalVisibleMemorySize"):
-                    kb = int(line.split("=")[1].strip())
-                    info["ram_gb"] = round(kb / (1024 * 1024), 1)
-        except Exception:
-            pass
+        pass
     
     # GPU & VRAM
     try:
@@ -342,6 +365,7 @@ class LlamaLauncherApp:
         self.root.geometry("980x900")
         self.root.minsize(900, 820)
         self.server_process = None
+        self.server_binary_exists = os.path.isfile(LLAMA_SERVER)
         
         # 硬體資訊
         self.hw = detect_hardware()
@@ -398,6 +422,14 @@ class LlamaLauncherApp:
         # 初始狀態偵測
         self.root.after(500, self.refresh_all_status)
         self.root.after(1200, self.auto_check_release_updates)
+
+        if not self.server_binary_exists:
+            messagebox.showwarning(
+                "⚠️ 找不到 llama-server",
+                "目前找不到 llama-server.exe，已停用啟動按鈕。\n"
+                f"預期路徑：\n{LLAMA_SERVER}\n\n"
+                "你仍可使用本工具調整參數與 OpenClaw 設定。",
+            )
 
     # ---------- UI 建構 ----------
     def create_widgets(self):
@@ -534,83 +566,98 @@ class LlamaLauncherApp:
 
         # === 4. 參數微調 ===
         f4 = ttk.LabelFrame(self.tab_launcher, text=" 4. 參數微調 (附中文說明) ", padding=8)
-        f4.pack(fill="both", expand=True, padx=12, pady=4)
-        f4.columnconfigure(1, weight=1)
+        f4.pack(fill="x", padx=12, pady=4)
 
-        row = 0
-        # Context
-        ttk.Label(f4, text="上下文長度 (-c):").grid(row=row, column=0, sticky="w", pady=4)
-        self.ent_ctx = ttk.Entry(f4, width=12)
-        self.ent_ctx.grid(row=row, column=1, sticky="w", padx=6)
+        lf = ttk.Frame(f4)
+        lf.pack(side="left", fill="both", expand=True, padx=8)
+        lf.columnconfigure(1, weight=1)
+
+        rf = ttk.Frame(f4)
+        rf.pack(side="right", fill="both", expand=True, padx=8)
+        rf.columnconfigure(1, weight=1)
+
+        l_row = 0
+        ttk.Label(lf, text="上下文長度 (-c):").grid(row=l_row, column=0, sticky="w", pady=4)
+        self.ent_ctx = ttk.Combobox(lf, values=["8192", "16384", "32768", "65536", "131072", "196608", "262144"], width=10)
+        self.ent_ctx.grid(row=l_row, column=1, sticky="w", padx=6)
         self.ent_ctx.bind("<KeyRelease>", lambda e: self.on_param_change())
-        ttk.Label(f4, text="💡 262144=256K。每 32K +180MB VRAM", foreground="blue", wraplength=180).grid(row=row, column=2, sticky="w")
-        row += 1
+        self.ent_ctx.bind("<<ComboboxSelected>>", lambda e: self.on_param_change())
+        ttk.Label(lf, text="💡 262144=256K。每 32K +180MB VRAM", foreground="blue", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=l_row, column=2, sticky="w")
+        l_row += 1
 
-        # MoE CPU 層
-        ttk.Label(f4, text="MoE CPU 層數 (--n-cpu-moe):").grid(row=row, column=0, sticky="w", pady=4)
-        self.ent_moe = ttk.Entry(f4, width=12)
-        self.ent_moe.grid(row=row, column=1, sticky="w", padx=6)
+        ttk.Label(lf, text="MoE CPU 層數 (--n-cpu-moe):").grid(row=l_row, column=0, sticky="w", pady=4)
+        self.ent_moe = ttk.Spinbox(lf, from_=0, to=100, increment=1, width=8, command=self.on_param_change)
+        self.ent_moe.grid(row=l_row, column=1, sticky="w", padx=6)
         self.ent_moe.bind("<KeyRelease>", lambda e: self.on_param_change())
-        ttk.Label(f4, text="💡 小=省RAM吃VRAM", foreground="blue", wraplength=180).grid(row=row, column=2, sticky="w")
-        row += 1
+        ttk.Label(lf, text="💡 小=省 RAM 吃 VRAM", foreground="blue", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=l_row, column=2, sticky="w")
+        l_row += 1
 
-        # NGL
-        ttk.Label(f4, text="GPU 層數 (-ngl):").grid(row=row, column=0, sticky="w", pady=4)
-        self.ent_ngl = ttk.Entry(f4, width=12)
-        self.ent_ngl.grid(row=row, column=1, sticky="w", padx=6)
+        ttk.Label(lf, text="GPU 層數 (-ngl):").grid(row=l_row, column=0, sticky="w", pady=4)
+        self.ent_ngl = ttk.Spinbox(lf, from_=0, to=200, increment=1, width=8, command=self.on_param_change)
+        self.ent_ngl.grid(row=l_row, column=1, sticky="w", padx=6)
         self.ent_ngl.bind("<KeyRelease>", lambda e: self.on_param_change())
-        ttk.Label(f4, text="💡 99=全上GPU", foreground="blue", wraplength=180).grid(row=row, column=2, sticky="w")
-        row += 1
+        ttk.Label(lf, text="💡 99=全上 GPU", foreground="blue", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=l_row, column=2, sticky="w")
+        l_row += 1
 
-        # Port
-        ttk.Label(f4, text="埠號 (--port):").grid(row=row, column=0, sticky="w", pady=4)
-        self.ent_port = ttk.Entry(f4, width=12)
+        ttk.Label(lf, text="CPU 執行緒 (-t):").grid(row=l_row, column=0, sticky="w", pady=4)
+        self.ent_threads = ttk.Spinbox(lf, from_=1, to=128, increment=1, width=8, command=self.on_param_change)
+        self.ent_threads.insert(0, str(self.hw.get("physical_cores", 8)))
+        self.ent_threads.grid(row=l_row, column=1, sticky="w", padx=6)
+        self.ent_threads.bind("<KeyRelease>", lambda e: self.on_param_change())
+        ttk.Label(lf, text=f"💡 建議實體核心數（{self.hw.get('physical_cores', 8)}）", foreground="blue", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=l_row, column=2, sticky="w")
+        l_row += 1
+
+        ttk.Label(lf, text="批次執行緒 (-tb):").grid(row=l_row, column=0, sticky="w", pady=4)
+        self.ent_threads_batch = ttk.Spinbox(lf, from_=1, to=128, increment=1, width=8, command=self.on_param_change)
+        self.ent_threads_batch.insert(0, str(self.hw.get("physical_cores", 8)))
+        self.ent_threads_batch.grid(row=l_row, column=1, sticky="w", padx=6)
+        self.ent_threads_batch.bind("<KeyRelease>", lambda e: self.on_param_change())
+        ttk.Label(lf, text="💡 Prompt 處理，建議與 -t 相同", foreground="blue", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=l_row, column=2, sticky="w")
+        l_row += 1
+
+        ttk.Label(lf, text="埠號 (--port):").grid(row=l_row, column=0, sticky="w", pady=4)
+        self.ent_port = ttk.Entry(lf, width=10)
         self.ent_port.insert(0, str(DEFAULT_PORT))
-        self.ent_port.grid(row=row, column=1, sticky="w", padx=6)
-        ttk.Label(f4, text="💡 預設 8080", foreground="blue").grid(row=row, column=2, sticky="w")
-        row += 1
+        self.ent_port.grid(row=l_row, column=1, sticky="w", padx=6)
+        ttk.Label(lf, text="💡 預設 8080", foreground="blue", font=("Microsoft JhengHei UI", 8)).grid(row=l_row, column=2, sticky="w")
 
-        # KV Cache K
-        ttk.Label(f4, text="K 快取 (--cache-type-k):").grid(row=row, column=0, sticky="w", pady=4)
-        self.cb_k = ttk.Combobox(f4, values=["f16", "q8_0", "q4_0"], state="readonly", width=10)
-        self.cb_k.grid(row=row, column=1, sticky="w", padx=6)
+        r_row = 0
+        ttk.Label(rf, text="K 快取 (--cache-type-k):").grid(row=r_row, column=0, sticky="w", pady=4)
+        self.cb_k = ttk.Combobox(rf, values=["f16", "q8_0", "q4_0"], state="readonly", width=8)
+        self.cb_k.grid(row=r_row, column=1, sticky="w", padx=6)
         self.cb_k.bind("<<ComboboxSelected>>", lambda e: self.on_param_change())
-        ttk.Label(f4, text="💡 q4_0省VRAM", foreground="blue", wraplength=180).grid(row=row, column=2, sticky="w")
-        row += 1
+        ttk.Label(rf, text="💡 q4_0 省 VRAM", foreground="blue", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=r_row, column=2, sticky="w")
+        r_row += 1
 
-        # KV Cache V
-        ttk.Label(f4, text="V 快取 (--cache-type-v):").grid(row=row, column=0, sticky="w", pady=4)
-        self.cb_v = ttk.Combobox(f4, values=["f16", "q8_0", "q4_0"], state="readonly", width=10)
-        self.cb_v.grid(row=row, column=1, sticky="w", padx=6)
+        ttk.Label(rf, text="V 快取 (--cache-type-v):").grid(row=r_row, column=0, sticky="w", pady=4)
+        self.cb_v = ttk.Combobox(rf, values=["f16", "q8_0", "q4_0"], state="readonly", width=8)
+        self.cb_v.grid(row=r_row, column=1, sticky="w", padx=6)
         self.cb_v.bind("<<ComboboxSelected>>", lambda e: self.on_param_change())
-        ttk.Label(f4, text="💡 同K", foreground="blue", wraplength=180).grid(row=row, column=2, sticky="w")
-        row += 1
+        ttk.Label(rf, text="💡 同 K 快取設定", foreground="blue", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=r_row, column=2, sticky="w")
+        r_row += 1
 
-        # Flash Attention
         self.var_fa = tk.BooleanVar(value=True)
-        cb_fa = ttk.Checkbutton(f4, text="Flash Attention (--flash-attn)", variable=self.var_fa, command=self.on_param_change)
-        cb_fa.grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Label(f4, text="💡 必開！加速 + 省 VRAM", foreground="green").grid(row=row, column=2, sticky="w")
-        row += 1
+        cb_fa = ttk.Checkbutton(rf, text="Flash Attention (--flash-attn)", variable=self.var_fa, command=self.on_param_change)
+        cb_fa.grid(row=r_row, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Label(rf, text="💡 必開！加速 + 省 VRAM", foreground="green", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=r_row, column=2, sticky="w")
+        r_row += 1
 
-        # No MMAP
         self.var_mmap = tk.BooleanVar(value=False)
-        cb_mmap = ttk.Checkbutton(f4, text="mmap (取消勾選 = --no-mmap)", variable=self.var_mmap, command=self.on_param_change)
-        cb_mmap.grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Label(f4, text="💡 RAM 緊時取消 = 防止 swap 卡頓", foreground="green").grid(row=row, column=2, sticky="w")
-        row += 1
+        cb_mmap = ttk.Checkbutton(rf, text="mmap (取消勾選 = --no-mmap)", variable=self.var_mmap, command=self.on_param_change)
+        cb_mmap.grid(row=r_row, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Label(rf, text="💡 RAM 緊時取消 = 防止 swap 卡頓", foreground="green", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=r_row, column=2, sticky="w")
+        r_row += 1
 
-        # Reasoning
         self.var_reason = tk.BooleanVar(value=False)
-        cb_reason = ttk.Checkbutton(f4, text="Reasoning 模式 (不勾 = --reasoning off)", variable=self.var_reason, command=self.on_param_change)
-        cb_reason.grid(row=row, column=0, columnspan=2, sticky="w", pady=4)
-        ttk.Label(f4, text="💡 一般對話關閉，避免回傳空白 content", foreground="green").grid(row=row, column=2, sticky="w")
+        cb_reason = ttk.Checkbutton(rf, text="Reasoning 模式 (不勾 = --reasoning off)", variable=self.var_reason, command=self.on_param_change)
+        cb_reason.grid(row=r_row, column=0, columnspan=2, sticky="w", pady=4)
+        ttk.Label(rf, text="💡 一般對話關閉，避免回傳空白 content", foreground="green", font=("Microsoft JhengHei UI", 8), wraplength=220).grid(row=r_row, column=2, sticky="w")
 
         # === 5. 指令預覽 ===
         f5 = ttk.LabelFrame(self.tab_launcher, text=" 5. 指令預覽 ", padding=6)
         f5.pack(fill="x", padx=12, pady=4)
 
-        self.txt_cmd = tk.Text(f5, height=3, width=85, wrap="char", font=("Consolas", 9))
+        self.txt_cmd = tk.Text(f5, height=5, width=85, wrap="char", font=("Consolas", 9))
         self.txt_cmd.pack(fill="x", pady=2)
 
         # === 6. 控制按鈕 ===
@@ -641,6 +688,10 @@ class LlamaLauncherApp:
         # 狀態列
         self.lbl_status = ttk.Label(self.tab_launcher, text="🟡 就緒 | 等待啟動", foreground="gray")
         self.lbl_status.pack(fill="x", padx=12, pady=2)
+
+        if not self.server_binary_exists:
+            self.btn_run.config(state="disabled")
+            self.lbl_status.config(text="🔴 找不到 llama-server.exe（僅可編輯設定）", foreground="red")
 
         # 建構 OpenClaw 分頁
         self.create_openclaw_widgets()
@@ -1274,6 +1325,12 @@ class LlamaLauncherApp:
         self.ent_moe.insert(0, p["moe_cpu"])
         self.ent_ngl.delete(0, tk.END)
         self.ent_ngl.insert(0, p["ngl"])
+        if hasattr(self, "ent_threads"):
+            self.ent_threads.delete(0, tk.END)
+            self.ent_threads.insert(0, str(self.hw.get("physical_cores", 8)))
+        if hasattr(self, "ent_threads_batch"):
+            self.ent_threads_batch.delete(0, tk.END)
+            self.ent_threads_batch.insert(0, str(self.hw.get("physical_cores", 8)))
         self.cb_k.set(p["kt"])
         self.cb_v.set(p["vt"])
         self.var_fa.set(p["fa"])
@@ -1299,6 +1356,12 @@ class LlamaLauncherApp:
                 self.ent_moe.insert(0, str(fav.get("moe_cpu", 32)))
                 self.ent_ngl.delete(0, tk.END)
                 self.ent_ngl.insert(0, str(fav.get("ngl", 99)))
+                if hasattr(self, "ent_threads"):
+                    self.ent_threads.delete(0, tk.END)
+                    self.ent_threads.insert(0, str(fav.get("threads", self.hw.get("physical_cores", 8))))
+                if hasattr(self, "ent_threads_batch"):
+                    self.ent_threads_batch.delete(0, tk.END)
+                    self.ent_threads_batch.insert(0, str(fav.get("threads_batch", self.hw.get("physical_cores", 8))))
                 self.cb_k.set(fav.get("kt", "q4_0"))
                 self.cb_v.set(fav.get("vt", "q4_0"))
                 self.var_fa.set(fav.get("fa", True))
@@ -1330,6 +1393,8 @@ class LlamaLauncherApp:
                 "ctx": self.ent_ctx.get(),
                 "moe_cpu": self.ent_moe.get(),
                 "ngl": self.ent_ngl.get(),
+                "threads": self.ent_threads.get() if hasattr(self, "ent_threads") else str(self.hw.get("physical_cores", 8)),
+                "threads_batch": self.ent_threads_batch.get() if hasattr(self, "ent_threads_batch") else str(self.hw.get("physical_cores", 8)),
                 "kt": self.cb_k.get(),
                 "vt": self.cb_v.get(),
                 "fa": self.var_fa.get(),
@@ -1425,6 +1490,8 @@ class LlamaLauncherApp:
             f'-m "{model}"',
             f"-c {self.ent_ctx.get() or 8192}",
             f"-ngl {self.ent_ngl.get() or 99}",
+            f"-t {self.ent_threads.get() if hasattr(self, 'ent_threads') else self.hw.get('physical_cores', 8)}",
+            f"-tb {self.ent_threads_batch.get() if hasattr(self, 'ent_threads_batch') else self.hw.get('physical_cores', 8)}",
             f"--n-cpu-moe {self.ent_moe.get() or 32}",
             f"--cache-type-k {self.cb_k.get() or 'q4_0'}",
             f"--cache-type-v {self.cb_v.get() or 'q4_0'}",
@@ -1469,6 +1536,14 @@ class LlamaLauncherApp:
 
     # ---------- 伺服器控制 ----------
     def run_server(self):
+        if not os.path.isfile(LLAMA_SERVER):
+            messagebox.showerror(
+                "❌ 找不到 llama-server",
+                "無法啟動伺服器：找不到 llama-server.exe\n"
+                f"預期路徑：\n{LLAMA_SERVER}",
+            )
+            return
+
         model = self.model_path.get().split("  (")[0]
         if not model or not os.path.isfile(model):
             messagebox.showwarning("⚠️ 警告", "請先選擇有效的 GGUF 模型檔案！")
@@ -1556,13 +1631,6 @@ class LlamaLauncherApp:
 
 # ==================== 入口 ====================
 if __name__ == "__main__":
-    # 檢查 llama-server 是否存在
-    if not os.path.isfile(LLAMA_SERVER):
-        print(f"❌ 找不到 llama-server.exe")
-        print(f"   預期路徑: {LLAMA_SERVER}")
-        print(f"   請確認 llama.cpp 已正確部署")
-        sys.exit(1)
-
     root = tk.Tk()
     app = LlamaLauncherApp(root)
     # 設定視窗置中

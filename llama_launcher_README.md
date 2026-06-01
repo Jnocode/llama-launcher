@@ -93,6 +93,12 @@ pip install psutil
 python llama_launcher.py
 ```
 
+## 啟動排錯
+
+- 若本機找不到 `llama-server.exe`，程式現在會正常開啟 GUI，不會直接退出。
+- 此時「啟動伺服器」按鈕會被停用，狀態列會顯示缺少執行檔。
+- 請確認 `LLAMA_DIR` 指向正確的 llama.cpp 目錄。
+
 ## 實測數據 (RTX 4070 12GB)
 
 | 配置 | VRAM | 狀態 |
