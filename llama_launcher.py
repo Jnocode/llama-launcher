@@ -30,7 +30,7 @@ PRESETS_FILE = os.path.join(os.path.dirname(__file__), "launcher_presets.json")
 OPENCLAW_CONFIG_PATH = r"D:\.openclaw\openclaw.json"
 OPENCLAW_AGENT_MODELS_PATH = r"D:\.openclaw\agents\main\agent\models.json"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "0.3.0"
+APP_VERSION = "1.0.1"
 # 可用環境變數覆蓋，例如：set LLAMA_LAUNCHER_RELEASE_REPO=owner/repo
 RELEASE_REPO = os.environ.get("LLAMA_LAUNCHER_RELEASE_REPO", "")
 
