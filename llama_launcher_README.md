@@ -10,6 +10,7 @@ llama.cpp 模型啟動器 GUI，專為 Qwen3.6-35B-A3B MoE 模型優化。
 - **多模態支援**：自動偵測 mmproj 檔案，一鍵啟用
 - **OpenClaw 設定分頁**：可直接讀取/寫入 `D:\.openclaw\openclaw.json` 與 `agents\main\agent\models.json`
 - **一鍵同步**：從當前啟動器參數同步 `contextWindow`、`input(text/image)`、`reserveTokensFloor`
+- **一鍵卸載模型**：新增「📤 卸載模型」按鈕，快速終止伺服器進程並 100% 釋放 VRAM 與 RAM 顯存/記憶體資源。
 - **內建更新功能**：啟動時自動檢查 GitHub Release，新版時跳出提示讓使用者決定是否更新
 - **手動更新檢查**：可手動檢查 Release，並前往安裝檔下載頁（`.exe`/`.msi`/`.zip`）
 - **開發者更新 fallback**：在 Git 倉庫環境可用 `git pull --ff-only` 套用程式碼更新

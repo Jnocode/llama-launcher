@@ -30,7 +30,7 @@ PRESETS_FILE = os.path.join(os.path.dirname(__file__), "launcher_presets.json")
 OPENCLAW_CONFIG_PATH = r"D:\.openclaw\openclaw.json"
 OPENCLAW_AGENT_MODELS_PATH = r"D:\.openclaw\agents\main\agent\models.json"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 # 可用環境變數覆蓋，例如：set LLAMA_LAUNCHER_RELEASE_REPO=owner/repo
 RELEASE_REPO = os.environ.get("LLAMA_LAUNCHER_RELEASE_REPO", "")
 
@@ -346,8 +346,8 @@ MODE_PRESETS = {
         "kt": "q4_0", "vt": "q4_0", "desc": "192K 上下文。適合 RAG 系統，保留更多 RAM 給向量資料庫。"
     },
     "🚀 極限 256K": {
-        "ctx": "262144", "moe_cpu": "32", "ngl": "99", "fa": True, "mmap": False,
-        "kt": "q4_0", "vt": "q4_0", "desc": "256K 上下文，本機實測最佳配置。RTX 4070 12GB VRAM 65% 使用率。"
+        "ctx": "262144", "moe_cpu": "36", "ngl": "99", "fa": True, "mmap": False,
+        "kt": "q4_0", "vt": "q4_0", "desc": "256K 上下文。12GB VRAM 已測穩定。與 qwen36-control.ps1 同步。"
     },
     "⚡ Benchmark": {
         "ctx": "8192", "moe_cpu": "24", "ngl": "99", "fa": True, "mmap": False,
@@ -411,6 +411,10 @@ class LlamaLauncherApp:
         self.update_status_text = tk.StringVar(value=f"版本 {APP_VERSION} | 尚未檢查更新")
         self.var_auto_check_updates = tk.BooleanVar(value=True)
         self.latest_release_info = None
+
+        # 新增控制台與日誌變數
+        self.var_show_console = tk.BooleanVar(value=True)   # 預設為顯示黑窗
+        self.var_enable_logging = tk.BooleanVar(value=True) # 預設為啟用日誌記錄
 
         self.create_widgets()
         self.update_resource_estimate()
@@ -660,6 +664,12 @@ class LlamaLauncherApp:
         self.txt_cmd = tk.Text(f5, height=5, width=85, wrap="char", font=("Consolas", 9))
         self.txt_cmd.pack(fill="x", pady=2)
 
+        # === 5a. 伺服器運行選項 ===
+        f_opts = ttk.Frame(self.tab_launcher)
+        f_opts.pack(fill="x", padx=12, pady=2)
+        ttk.Checkbutton(f_opts, text="🖥️ 顯示控制台視窗 (黑窗)", variable=self.var_show_console).pack(side="left", padx=4)
+        ttk.Checkbutton(f_opts, text="📝 啟用背景日誌記錄", variable=self.var_enable_logging).pack(side="left", padx=12)
+
         # === 6. 控制按鈕 ===
         f7 = ttk.Frame(self.tab_launcher)
         f7.pack(fill="x", padx=12, pady=8)
@@ -669,8 +679,12 @@ class LlamaLauncherApp:
         self.btn_run.pack(side="left", padx=4)
         self.btn_stop = ttk.Button(f7, text="🛑 停止伺服器", command=self.stop_server, state="disabled")
         self.btn_stop.pack(side="left", padx=4)
+        self.btn_unload = ttk.Button(f7, text="📤 卸載模型", command=self.unload_model, state="disabled")
+        self.btn_unload.pack(side="left", padx=4)
         ttk.Button(f7, text="✂ 複製指令", command=self.copy_cmd).pack(side="left", padx=4)
         ttk.Button(f7, text="🧪 健康檢查", command=self.health_check).pack(side="left", padx=4)
+        self.btn_view_log = ttk.Button(f7, text="📄 檢視日誌", command=self.view_current_log)
+        self.btn_view_log.pack(side="left", padx=4)
 
         # === 7. 更新功能 ===
         f8 = ttk.LabelFrame(self.tab_launcher, text=" 7. 程式更新 ", padding=6)
@@ -1479,6 +1493,18 @@ class LlamaLauncherApp:
         
         messagebox.showinfo("健康檢查", "\n".join(lines))
 
+    def view_current_log(self):
+        """用系統預設文字編輯器開啟 llama_server.log"""
+        log_path = os.path.join(LOG_DIR, "llama_server.log")
+        if not os.path.isfile(log_path):
+            messagebox.showinfo("ℹ️ 提示", "目前尚無日誌檔案。\n請確認已啟用日誌功能並成功啟動伺服器。")
+            return
+        
+        try:
+            os.startfile(log_path)
+        except Exception as e:
+            messagebox.showerror("❌ 無法開啟日誌", f"開啟日誌檔案失敗:\n{e}")
+
     # ---------- 指令建構 ----------
     def build_command(self):
         model = self.model_path.get().split("  (")[0]  # 去除大小標籤
@@ -1584,21 +1610,43 @@ class LlamaLauncherApp:
 
         try:
             os.makedirs(LOG_DIR, exist_ok=True)
+            log_path = os.path.join(LOG_DIR, "llama_server.log")
+            
+            # 清理上一輪日誌防體積暴增
+            if self.var_enable_logging.get():
+                if os.path.exists(log_path):
+                    try:
+                        os.remove(log_path)
+                    except Exception:
+                        pass
+
             # 寫入 bat 檔再執行，避免 shell=True 引號問題
             bat_path = os.path.join(LOG_DIR, "_launcher_start.bat")
             with open(bat_path, "w", encoding="utf-8") as f:
                 f.write("@echo off\n")
-                f.write(cmd_line + "\n")
+                if self.var_enable_logging.get():
+                    # 同時將 stdout & stderr 導向至 llama_server.log
+                    f.write(f'{cmd_line} > "{log_path}" 2>&1\n')
+                else:
+                    f.write(cmd_line + "\n")
                 f.write("if %errorlevel% neq 0 pause\n")
             
+            # 視窗旗標配置：若不顯示黑窗，則在背景靜音執行
+            flags = 0
+            if self.var_show_console.get():
+                flags = subprocess.CREATE_NEW_CONSOLE
+            else:
+                flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0x08000000
+
             self.server_process = subprocess.Popen(
                 bat_path,
                 shell=True,
                 cwd=WORK_DIR,
-                creationflags=subprocess.CREATE_NEW_CONSOLE,
+                creationflags=flags,
             )
             self.btn_run.config(state="disabled")
             self.btn_stop.config(state="normal")
+            self.btn_unload.config(state="normal")
             self.lbl_status.config(
                 text=f"🟢 伺服器已啟動 | http://127.0.0.1:{port}",
                 foreground="green",
@@ -1626,18 +1674,25 @@ class LlamaLauncherApp:
             pass
         self.btn_run.config(state="normal")
         self.btn_stop.config(state="disabled")
+        self.btn_unload.config(state="disabled")
         self.lbl_status.config(text="🔴 伺服器已停止", foreground="red")
+
+    def unload_model(self):
+        """卸載目前載入的模型（終止伺服器以釋放 VRAM 顯存與 RAM）"""
+        self.stop_server()
+        self.lbl_status.config(text="📤 模型已卸載，顯存與記憶體已釋放", foreground="blue")
+        self.refresh_all_status()
 
 
 # ==================== 入口 ====================
 if __name__ == "__main__":
     root = tk.Tk()
     app = LlamaLauncherApp(root)
-    # 設定視窗置中
+    # 設定視窗置中 (硬性指定寬高，防止 update_idletasks 拿到 1 像素導致視窗縮成看不見的點)
     root.update_idletasks()
-    width = root.winfo_width()
-    height = root.winfo_height()
+    width = 980
+    height = 900
     x = (root.winfo_screenwidth() // 2) - (width // 2)
     y = (root.winfo_screenheight() // 2) - (height // 2)
-    root.geometry(f'+{x}+{y}')
+    root.geometry(f'{width}x{height}+{x}+{y}')
     root.mainloop()
