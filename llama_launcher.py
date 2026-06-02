@@ -32,7 +32,7 @@ OPENCLAW_AGENT_MODELS_PATH = r"D:\.openclaw\agents\main\agent\models.json"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
 APP_VERSION = "1.0.2"
 # 可用環境變數覆蓋，例如：set LLAMA_LAUNCHER_RELEASE_REPO=owner/repo
-RELEASE_REPO = os.environ.get("LLAMA_LAUNCHER_RELEASE_REPO", "")
+RELEASE_REPO = os.environ.get("LLAMA_LAUNCHER_RELEASE_REPO", "Jnocode/llama-launcher")
 
 # ==================== 硬體偵測 ====================
 def detect_hardware():
