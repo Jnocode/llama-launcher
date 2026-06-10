@@ -31,6 +31,23 @@
 *   **一鍵卸載**：新增「📤 卸載模型」按鈕，快速終止伺服器進程，不需關閉 GUI 即可 100% 釋放載入中模型所佔用的 VRAM 顯存與 RAM 記憶體。
 *   **狀態同步**：按鈕狀態與伺服器執行狀態實時同步，確保僅在執行中可觸發卸載，且卸載後 UI 狀態與資源指標會同步刷新。
 
+### 7. ⚙️ 設定持久化分頁 (Settings Persistence Tab)
+*   **路徑預設值管理**：所有路徑欄位（Model Dir、Llama Dir、Log Dir）均附「瀏覽」按鈕，可一鍵選取資料夾。
+*   **儲存/重置**：點選「💾 儲存預設」將所有路徑寫入 `launcher_settings.json`；點選「🔄 重置預設」清除自訂設定還原為程式內建值。
+
+### 8. 🌐 WSL/LAN 網路模式 (Network Mode)
+*   **跨 WSL 連線**：啟用後自動綁定 `0.0.0.0`，使 WSL 或其他區域網路裝置可透過 `host.docker.internal` 連線至本機 llama.cpp 服務。
+*   **動態主機解析**：OpenClaw 設定自動使用 `host.docker.internal` 作為 baseUrl，不再需要手動修改配置。
+
+### 9. 🔌 OpenClaw 端口自動補全 (Port Auto-Complete)
+*   **開啟即偵測**：切換至 OpenClaw 設定分頁時，自動偵測 llama.cpp 目前使用的端口並填入配置。
+*   **智能回退**：若無法自動偵測，保留原值不覆蓋，避免誤設定。
+
+### 10. 🖼️ 多模態 mmproj 手動瀏覽強化 (Manual mmproj Browse)
+*   **支援雙格式**：`.gguf` 與 `.bin` 格式皆可瀏覽選取，不再限單一格式。
+*   **初始目錄優化**：優先定位至 `llama-server.exe` 所在目錄（mmproj 常見放置處）。
+*   **切換模型不覆蓋**：手動選取 mmproj 後，即使掃描到新的 auto-detect 結果，系統保留手動選擇不受影響。
+
 ---
 
 ## 🚀 快速開始 (Quick Start)

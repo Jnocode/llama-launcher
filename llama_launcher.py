@@ -18,6 +18,7 @@ import urllib.error
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+from copy import deepcopy
 
 # ==================== 環境路徑 ====================
 LLAMA_DIR = r"D:\Workspace\artifacts\llama.cpp\b9060-cuda13.1"
@@ -30,9 +31,62 @@ PRESETS_FILE = os.path.join(os.path.dirname(__file__), "launcher_presets.json")
 OPENCLAW_CONFIG_PATH = r"D:\.openclaw\openclaw.json"
 OPENCLAW_AGENT_MODELS_PATH = r"D:\.openclaw\agents\main\agent\models.json"
 APP_ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 # 可用環境變數覆蓋，例如：set LLAMA_LAUNCHER_RELEASE_REPO=owner/repo
 RELEASE_REPO = os.environ.get("LLAMA_LAUNCHER_RELEASE_REPO", "Jnocode/llama-launcher")
+SETTINGS_FILE = os.path.join(APP_ROOT, "launcher_settings.json")
+
+# ==================== 使用者設定持久化 ====================
+_PATH_KEYS = [
+    "LLAMA_DIR",
+    "LLAMA_SERVER",
+    "MODEL_DIR",
+    "LOG_DIR",
+    "WORK_DIR",
+    "OPENCLAW_CONFIG_PATH",
+    "OPENCLAW_AGENT_MODELS_PATH",
+    "DEFAULT_PORT",
+]
+
+
+def _load_settings_from_file():
+    """從 launcher_settings.json 載入設定，覆蓋模組層級常數"""
+    if not os.path.isfile(SETTINGS_FILE):
+        return {}
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _apply_settings(overrides):
+    """將 overrides dict 套用至模組層級常數"""
+    g = globals()
+    changed = False
+    for key in _PATH_KEYS:
+        if key in overrides:
+            val = overrides[key]
+            if key == "DEFAULT_PORT":
+                g[key] = int(val)
+            else:
+                g[key] = str(val)
+            changed = True
+    # 若只改了 LLAMA_DIR 但沒給 LLAMA_SERVER，自動補上
+    if "LLAMA_DIR" in overrides and "LLAMA_SERVER" not in overrides:
+        g["LLAMA_SERVER"] = os.path.join(g["LLAMA_DIR"], "llama-server.exe")
+        changed = True
+    if changed:
+        # 通知 scan_models_detailed 使用最新的 MODEL_DIR
+        global _MODEL_DIR_OVERRIDE
+        _MODEL_DIR_OVERRIDE = str(overrides.get("MODEL_DIR", MODEL_DIR))
+
+
+# 啟動時自動載入設定
+_settings_overrides = _load_settings_from_file()
+if _settings_overrides:
+    _apply_settings(_settings_overrides)
+_MODEL_DIR_OVERRIDE = None  # 讓 scan_models_detailed 可動態切換
 
 # ==================== 硬體偵測 ====================
 def detect_hardware():
@@ -211,17 +265,18 @@ def save_favorite(name, params):
 
 
 # ==================== 模型庫掃描 ====================
-def scan_models_detailed():
+def scan_models_detailed(model_dir_override=None):
     """掃描模型並回傳詳細資訊（含 mmproj 對應）"""
+    scan_dir = model_dir_override or _MODEL_DIR_OVERRIDE or MODEL_DIR
     models = []
     mmproj_map = {}  # {model_base_name: mmproj_path}
     
-    if not os.path.isdir(MODEL_DIR):
+    if not os.path.isdir(scan_dir):
         return models, mmproj_map
     
     # 第一次掃描：收集所有 mmproj
     mmproj_files = {}
-    for root_dir, _, files in os.walk(MODEL_DIR):
+    for root_dir, _, files in os.walk(scan_dir):
         for f in files:
             if f.endswith(".gguf") and "mmproj" in f.lower():
                 full = os.path.join(root_dir, f)
@@ -236,7 +291,7 @@ def scan_models_detailed():
                 mmproj_files[base] = {"path": full, "size_gb": size_gb, "name": f}
     
     # 第二次掃描：收集模型 + 對應 mmproj
-    for root_dir, _, files in os.walk(MODEL_DIR):
+    for root_dir, _, files in os.walk(scan_dir):
         for f in files:
             if not f.endswith(".gguf") or "mmproj" in f.lower():
                 continue
@@ -407,6 +462,19 @@ class LlamaLauncherApp:
         self.var_oc_image_input = tk.BooleanVar(value=True)
         self.var_oc_sync_base_url = tk.BooleanVar(value=True)
 
+        # 可編輯路徑設定變數（供設定分頁使用）
+        self.setting_llama_dir = tk.StringVar(value=LLAMA_DIR)
+        self.setting_llama_server = tk.StringVar(value=LLAMA_SERVER)
+        self.setting_model_dir = tk.StringVar(value=MODEL_DIR)
+        self.setting_log_dir = tk.StringVar(value=LOG_DIR)
+        self.setting_work_dir = tk.StringVar(value=WORK_DIR)
+        self.setting_oc_config = tk.StringVar(value=OPENCLAW_CONFIG_PATH)
+        self.setting_oc_models = tk.StringVar(value=OPENCLAW_AGENT_MODELS_PATH)
+        self.setting_port = tk.StringVar(value=str(DEFAULT_PORT))
+
+        # mmproj 全路徑（手動瀏覽時使用，不受 auto-detect 限制）
+        self.mmproj_full_path = tk.StringVar()
+
         # 更新狀態
         self.update_status_text = tk.StringVar(value=f"版本 {APP_VERSION} | 尚未檢查更新")
         self.var_auto_check_updates = tk.BooleanVar(value=True)
@@ -415,6 +483,7 @@ class LlamaLauncherApp:
         # 新增控制台與日誌變數
         self.var_show_console = tk.BooleanVar(value=True)   # 預設為顯示黑窗
         self.var_enable_logging = tk.BooleanVar(value=True) # 預設為啟用日誌記錄
+        self.var_enable_lan = tk.BooleanVar(value=False)    # WSL/LAN 模式（綁定 0.0.0.0）
 
         self.create_widgets()
         self.update_resource_estimate()
@@ -442,8 +511,10 @@ class LlamaLauncherApp:
         self.notebook.pack(fill="both", expand=True, padx=8, pady=8)
 
         self.tab_launcher = ttk.Frame(self.notebook)
+        self.tab_settings = ttk.Frame(self.notebook)
         self.tab_openclaw = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_launcher, text="🦙 啟動器")
+        self.notebook.add(self.tab_settings, text="⚙ 路徑設定")
         self.notebook.add(self.tab_openclaw, text="🧩 OpenClaw 設定")
 
         # === 0. 硬體資訊區 ===
@@ -490,6 +561,8 @@ class LlamaLauncherApp:
         self.cb_mmproj = ttk.Combobox(f1_mm, textvariable=self.mmproj_path, state="readonly", width=45)
         self.cb_mmproj.pack(side="left", padx=4, fill="x", expand=True)
         self.cb_mmproj.bind("<<ComboboxSelected>>", lambda e: self.on_mmproj_change())
+        # 手動瀏覽按鈕
+        ttk.Button(f1_mm, text="📁 瀏覽", command=self.browse_mmproj, width=8).pack(side="left", padx=2)
         # 資訊放右邊
         self.lbl_mmproj_info = ttk.Label(f1_mm, text="", foreground="green", font=("Microsoft JhengHei UI", 8))
         self.lbl_mmproj_info.pack(side="right", padx=4)
@@ -669,6 +742,7 @@ class LlamaLauncherApp:
         f_opts.pack(fill="x", padx=12, pady=2)
         ttk.Checkbutton(f_opts, text="🖥️ 顯示控制台視窗 (黑窗)", variable=self.var_show_console).pack(side="left", padx=4)
         ttk.Checkbutton(f_opts, text="📝 啟用背景日誌記錄", variable=self.var_enable_logging).pack(side="left", padx=12)
+        ttk.Checkbutton(f_opts, text="🌐 允許 WSL/LAN 連線 (綁定 0.0.0.0)", variable=self.var_enable_lan).pack(side="left", padx=12)
 
         # === 6. 控制按鈕 ===
         f7 = ttk.Frame(self.tab_launcher)
@@ -707,8 +781,180 @@ class LlamaLauncherApp:
             self.btn_run.config(state="disabled")
             self.lbl_status.config(text="🔴 找不到 llama-server.exe（僅可編輯設定）", foreground="red")
 
+        # 建構設定分頁
+        self.create_settings_widgets()
+
         # 建構 OpenClaw 分頁
         self.create_openclaw_widgets()
+
+    # ---------- 路徑設定分頁 ----------
+    def create_settings_widgets(self):
+        """⚙ 路徑設定分頁 — 可修改所有預設路徑"""
+        # openclaw.json 路徑
+        f0 = ttk.LabelFrame(self.tab_settings, text=" OpenClaw 設定檔路徑 ", padding=8)
+        f0.pack(fill="x", padx=12, pady=6)
+
+        ttk.Label(f0, text="openclaw.json:").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(f0, textvariable=self.setting_oc_config, width=90).grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Label(f0, text="agent models.json:").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(f0, textvariable=self.setting_oc_models, width=90).grid(row=1, column=1, sticky="ew", padx=6)
+        f0.columnconfigure(1, weight=1)
+
+        # llama.cpp 路徑
+        f1 = ttk.LabelFrame(self.tab_settings, text=" llama.cpp 路徑 ", padding=8)
+        f1.pack(fill="x", padx=12, pady=4)
+
+        def _make_dir_row(parent, label, var, row):
+            ttk.Label(parent, text=f"{label}:").grid(row=row, column=0, sticky="w", pady=4)
+            ttk.Entry(parent, textvariable=var, width=80).grid(row=row, column=1, sticky="ew", padx=6)
+            ttk.Button(parent, text="📁 瀏覽", command=lambda: _browse_dir(var), width=8).grid(row=row, column=2, padx=2)
+            parent.columnconfigure(1, weight=1)
+
+        def _browse_dir(var):
+            path = filedialog.askdirectory(title="選擇目錄", initialdir=var.get() or LLAMA_DIR)
+            if path:
+                var.set(path)
+
+        _make_dir_row(f1, "LLAMA_DIR", self.setting_llama_dir, 0)
+        _make_dir_row(f1, "MODEL_DIR", self.setting_model_dir, 1)
+        _make_dir_row(f1, "LOG_DIR", self.setting_log_dir, 2)
+        _make_dir_row(f1, "WORK_DIR", self.setting_work_dir, 3)
+
+        # llama-server.exe（個別檔案）
+        ttk.Label(f1, text="LLAMA_SERVER:").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(f1, textvariable=self.setting_llama_server, width=80).grid(row=4, column=1, sticky="ew", padx=6)
+        ttk.Button(
+            f1, text="📄 瀏覽", width=8,
+            command=lambda: self._browse_file(self.setting_llama_server, "選擇 llama-server.exe", [("執行檔", "*.exe"), ("所有檔案", "*.*")])
+        ).grid(row=4, column=2, padx=2)
+        f1.columnconfigure(1, weight=1)
+
+        # 預設 Port
+        f2 = ttk.LabelFrame(self.tab_settings, text=" 其他設定 ", padding=8)
+        f2.pack(fill="x", padx=12, pady=4)
+        ttk.Label(f2, text="預設 Port:").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Entry(f2, textvariable=self.setting_port, width=10).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(f2, text="💡 修改後需重啟啟動器才能完全生效", foreground="blue", font=("Microsoft JhengHei UI", 8)).grid(
+            row=0, column=2, sticky="w", padx=6
+        )
+
+        # 操作按鈕
+        f3 = ttk.Frame(self.tab_settings)
+        f3.pack(fill="x", padx=12, pady=8)
+        ttk.Button(f3, text="💾 儲存設定", command=self.save_runtime_settings_action, style="Accent.TButton").pack(side="left", padx=4)
+        ttk.Button(f3, text="↩ 回復預設", command=self.reset_settings_action).pack(side="left", padx=4)
+
+        self.lbl_settings_status = ttk.Label(
+            self.tab_settings,
+            text="🟡 修改路徑後請按「儲存設定」，重啟啟動器後生效",
+            foreground="gray",
+        )
+        self.lbl_settings_status.pack(fill="x", padx=12, pady=4)
+
+        # 說明區
+        f4 = ttk.LabelFrame(self.tab_settings, text=" 說明 ", padding=8)
+        f4.pack(fill="x", padx=12, pady=4)
+        ttk.Label(
+            f4,
+            text=(
+                "• LLAMA_DIR：llama.cpp 的根目錄（需包含 llama-server.exe）\n"
+                "• MODEL_DIR：存放 GGUF 模型的目錄，會自動掃描其中的 .gguf 檔案\n"
+                "• LOG_DIR：伺服器執行日誌存放位置\n"
+                "• WORK_DIR：伺服器的工作目錄（cwd）\n"
+                "• 修改 OpenClaw 路徑後，請至「🧩 OpenClaw 設定」分頁確認並重新讀取\n"
+                "• 部分設定（如 Port）需要重啟啟動器才能完全生效"
+            ),
+            foreground="navy",
+            justify="left",
+        ).pack(fill="x", padx=6, pady=6)
+
+    def _browse_file(self, var, title, filetypes):
+        """瀏覽並選取單一檔案"""
+        path = filedialog.askopenfilename(title=title, filetypes=filetypes, initialdir=os.path.dirname(var.get()))
+        if path:
+            var.set(path)
+
+    def save_runtime_settings_action(self):
+        """將目前路徑設定寫入 launcher_settings.json 並更新模組常數"""
+        overrides = {
+            "LLAMA_DIR": self.setting_llama_dir.get().strip(),
+            "LLAMA_SERVER": self.setting_llama_server.get().strip(),
+            "MODEL_DIR": self.setting_model_dir.get().strip(),
+            "LOG_DIR": self.setting_log_dir.get().strip(),
+            "WORK_DIR": self.setting_work_dir.get().strip(),
+            "OPENCLAW_CONFIG_PATH": self.setting_oc_config.get().strip(),
+            "OPENCLAW_AGENT_MODELS_PATH": self.setting_oc_models.get().strip(),
+            "DEFAULT_PORT": self.setting_port.get().strip(),
+        }
+        try:
+            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(overrides, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            # 套用至模組常數
+            _apply_settings(overrides)
+            # 同步 OpenClaw 分頁的 StringVar
+            self.openclaw_config_path.set(overrides["OPENCLAW_CONFIG_PATH"])
+            self.openclaw_agent_models_path.set(overrides["OPENCLAW_AGENT_MODELS_PATH"])
+            self.lbl_settings_status.config(
+                text=f"✅ 已儲存至 {SETTINGS_FILE}，建議重啟啟動器",
+                foreground="green",
+            )
+            messagebox.showinfo("✅ 儲存完成", "路徑設定已儲存。\n部分變更需要重啟啟動器才能完全生效。")
+        except Exception as e:
+            messagebox.showerror("❌ 儲存失敗", f"無法寫入設定檔:\n{e}")
+
+    def reset_settings_action(self):
+        """回復所有路徑設定為模組預設值"""
+        if not messagebox.askyesno("⚠️ 確認", "確定要回復所有路徑為預設值？"):
+            return
+        # 從模組常數重設 StringVar
+        self.setting_llama_dir.set(LLAMA_DIR)
+        self.setting_llama_server.set(LLAMA_SERVER)
+        self.setting_model_dir.set(MODEL_DIR)
+        self.setting_log_dir.set(LOG_DIR)
+        self.setting_work_dir.set(WORK_DIR)
+        self.setting_oc_config.set(OPENCLAW_CONFIG_PATH)
+        self.setting_oc_models.set(OPENCLAW_AGENT_MODELS_PATH)
+        self.setting_port.set(str(DEFAULT_PORT))
+        # 同時清除設定檔
+        if os.path.isfile(SETTINGS_FILE):
+            try:
+                os.remove(SETTINGS_FILE)
+            except Exception:
+                pass
+        self.lbl_settings_status.config(text="✅ 已回復預設值，尚未儲存", foreground="green")
+
+    def browse_mmproj(self):
+        """手動瀏覽選取 mmproj 檔案"""
+        # 預設從 LLAMA_DIR 開始找（mmproj 常跟 llama-server.exe 放在一起）
+        initial_dir = self._get_llama_server_dir()
+        if not initial_dir or not os.path.isdir(initial_dir):
+            initial_dir = self._get_model_dir()
+        if not initial_dir or not os.path.isdir(initial_dir):
+            initial_dir = os.path.expanduser("~")
+
+        path = filedialog.askopenfilename(
+            title="選擇 mmproj 多模態模型（支援 .gguf / .bin）",
+            filetypes=[
+                ("多模態模型", "*.gguf *.bin"),
+                ("GGUF 模型", "*.gguf"),
+                ("BIN 模型", "*.bin"),
+                ("所有檔案", "*.*"),
+            ],
+            initialdir=initial_dir,
+        )
+        if path:
+            filename = os.path.basename(path)
+            self.mmproj_path.set(filename)
+            self.mmproj_full_path.set(path)
+            self.cb_mmproj["values"] = [filename]
+            self.cb_mmproj.set(filename)
+            self.var_mmproj.set(True)
+            self.lbl_mmproj_info.config(
+                text=f"📷 手動選取: {filename}",
+                foreground="blue",
+            )
+            self.on_mmproj_change()
 
     def create_openclaw_widgets(self):
         """OpenClaw 設定分頁"""
@@ -1040,6 +1286,15 @@ class LlamaLauncherApp:
         port = self.ent_port.get() or str(DEFAULT_PORT)
         self.oc_base_url.set(f"http://127.0.0.1:{port}/v1")
 
+        # WSL/LAN 模式：同步提示改用外部可連線位址
+        if self.var_enable_lan.get():
+            ext_url = self._get_base_url_for_openclaw()
+            self.oc_base_url.set(ext_url)
+            self.lbl_openclaw_status.config(
+                text=f"🌐 WSL/LAN 模式：OpenClaw baseUrl → {ext_url}",
+                foreground="orange",
+            )
+
         self.lbl_openclaw_status.config(text="✅ 已從啟動器參數帶入", foreground="green")
 
     def _safe_int(self, value, default):
@@ -1070,7 +1325,17 @@ class LlamaLauncherApp:
                 inputs = m0.get("input", ["text"])
                 self.var_oc_image_input.set("image" in inputs)
 
-            self.oc_base_url.set(provider.get("baseUrl", self.oc_base_url.get()))
+            raw_base_url = provider.get("baseUrl", "").strip()
+            if raw_base_url:
+                self.oc_base_url.set(raw_base_url)
+            else:
+                # ⚡ 未設定 baseUrl → 自動補全（WSL/LAN 模式用 host.docker.internal）
+                self.oc_base_url.set(self._get_base_url_for_openclaw())
+                hint = "host.docker.internal" if self.var_enable_lan.get() else "127.0.0.1"
+                self.lbl_openclaw_status.config(
+                    text=f"ℹ️ OpenClaw 未設定 baseUrl，已自動補為 {hint}:{self.ent_port.get() or DEFAULT_PORT}",
+                    foreground="orange",
+                )
 
             reserve = (
                 cfg.get("agents", {})
@@ -1107,8 +1372,16 @@ class LlamaLauncherApp:
             port = self.ent_port.get() or str(DEFAULT_PORT)
             base_url = f"http://127.0.0.1:{port}/v1"
             self.oc_base_url.set(base_url)
+            # WSL/LAN 模式：改用外部可連線位址
+            if self.var_enable_lan.get():
+                base_url = self._get_base_url_for_openclaw()
+                self.oc_base_url.set(base_url)
         else:
-            base_url = self.oc_base_url.get().strip() or f"http://127.0.0.1:{DEFAULT_PORT}/v1"
+            base_url = self.oc_base_url.get().strip()
+            if not base_url:
+                # ⚡ 未填 baseUrl → 自動補（WSL/LAN 模式用 host.docker.internal）
+                base_url = self._get_base_url_for_openclaw()
+                self.oc_base_url.set(base_url)
 
         model_input = ["text", "image"] if self.var_oc_image_input.get() else ["text"]
 
@@ -1175,7 +1448,7 @@ class LlamaLauncherApp:
     # ---------- 模型掃描 ----------
     def scan_models(self):
         """掃描 MODEL_DIR 下所有 .gguf 檔案"""
-        self.models, self.mmproj_map = scan_models_detailed()
+        self.models, self.mmproj_map = scan_models_detailed(model_dir_override=self._get_model_dir())
         models_display = []
         for m in self.models:
             display = f"{m['path']}  ({m['size_gb']:.1f} GB)"
@@ -1197,32 +1470,55 @@ class LlamaLauncherApp:
     def on_model_change(self):
         """模型切換時更新資訊"""
         path = self.model_path.get().split("  (")[0]
-        # 找詳細資訊
+        if not path:
+            self.lbl_model_info.config(text="未選擇模型", foreground="gray")
+            return
+        
+        # 找詳細資訊（手動瀏覽的模型可能不在 self.models 中）
         found_mmproj = None
+        model_found = False
         for m in self.models:
             if m["path"] == path:
+                model_found = True
                 info = f"📦 {m['name']} | 大小: {m['size_gb']:.1f} GB | 架構: {m['arch']} | 量化: {m['quant']} | 目錄: {m['dir']}"
                 self.lbl_model_info.config(text=info, foreground="blue")
                 if m.get("mmproj"):
                     found_mmproj = m["mmproj"]
                 break
-        else:
-            self.lbl_model_info.config(text="未選擇模型", foreground="gray")
         
-        # 自動偵測並推薦 mmproj
-        if found_mmproj:
-            self.cb_mmproj["values"] = [found_mmproj["name"]]
-            self.cb_mmproj.set(found_mmproj["name"])
-            self.lbl_mmproj_info.config(
-                text=f"📷 找到 {found_mmproj['name']} ({found_mmproj['size_gb']:.1f}GB)",
-                foreground="green"
+        if not model_found:
+            # 手動瀏覽的模型：顯示基本資訊
+            size_gb = os.path.getsize(path) / (1024**3) if os.path.isfile(path) else 0
+            self.lbl_model_info.config(
+                text=f"📦 {os.path.basename(path)} | 大小: {size_gb:.1f} GB | 手動選取",
+                foreground="blue",
             )
-            self.var_mmproj.set(True)  # 自動啟用
+        
+        # 自動偵測並推薦 mmproj — 只有當使用者尚未手動選取時才自動覆蓋
+        if found_mmproj:
+            if not self.mmproj_full_path.get():
+                self.cb_mmproj["values"] = [found_mmproj["name"]]
+                self.cb_mmproj.set(found_mmproj["name"])
+                self.mmproj_full_path.set(found_mmproj["path"])
+                self.lbl_mmproj_info.config(
+                    text=f"📷 找到 {found_mmproj['name']} ({found_mmproj['size_gb']:.1f}GB)",
+                    foreground="green"
+                )
+                self.var_mmproj.set(True)  # 自動啟用
+            else:
+                # 已手動選取，顯示 auto-detect 資訊但保留手動選擇
+                self.lbl_mmproj_info.config(
+                    text=f"📷 (auto) {found_mmproj['name']} | ✅ 使用手動選取: {os.path.basename(self.mmproj_full_path.get())}",
+                    foreground="blue"
+                )
         else:
-            self.cb_mmproj["values"] = []
-            self.cb_mmproj.set("")
-            self.lbl_mmproj_info.config(text="無 mmproj", foreground="gray")
-            self.var_mmproj.set(False)
+            # 不清空，保留手動瀏覽的結果
+            if not self.mmproj_full_path.get():
+                self.cb_mmproj.set("")
+                self.lbl_mmproj_info.config(
+                    text="無 mmproj，請按 📁 瀏覽 手動選取",
+                    foreground="orange"
+                )
         
         self.update_resource_estimate()
 
@@ -1316,7 +1612,7 @@ class LlamaLauncherApp:
         path = filedialog.askopenfilename(
             title="選擇 GGUF 模型",
             filetypes=[("GGUF 模型", "*.gguf"), ("所有檔案", "*.*")],
-            initialdir=MODEL_DIR,
+            initialdir=self._get_model_dir(),
         )
         if path:
             self.model_path.set(path)
@@ -1495,7 +1791,7 @@ class LlamaLauncherApp:
 
     def view_current_log(self):
         """用系統預設文字編輯器開啟 llama_server.log"""
-        log_path = os.path.join(LOG_DIR, "llama_server.log")
+        log_path = os.path.join(self._get_log_dir(), "llama_server.log")
         if not os.path.isfile(log_path):
             messagebox.showinfo("ℹ️ 提示", "目前尚無日誌檔案。\n請確認已啟用日誌功能並成功啟動伺服器。")
             return
@@ -1506,13 +1802,46 @@ class LlamaLauncherApp:
             messagebox.showerror("❌ 無法開啟日誌", f"開啟日誌檔案失敗:\n{e}")
 
     # ---------- 指令建構 ----------
+    def _get_llama_server(self):
+        """取得有效的 llama-server.exe 路徑（支援動態設定）"""
+        return self.setting_llama_server.get().strip() or LLAMA_SERVER
+
+    def _get_model_dir(self):
+        """取得有效的模型目錄（支援動態設定）"""
+        return self.setting_model_dir.get().strip() or MODEL_DIR
+
+    def _get_log_dir(self):
+        """取得有效的日誌目錄（支援動態設定）"""
+        return self.setting_log_dir.get().strip() or LOG_DIR
+
+    def _get_work_dir(self):
+        """取得有效的工作目錄（支援動態設定）"""
+        return self.setting_work_dir.get().strip() or WORK_DIR
+
+    def _get_host(self):
+        """根據 WSL/LAN 模式決定綁定位址"""
+        return "0.0.0.0" if self.var_enable_lan.get() else "127.0.0.1"
+
+    def _get_external_host(self):
+        """取得供外部（WSL/LAN）連線用的主機位址"""
+        if self.var_enable_lan.get():
+            return "host.docker.internal"
+        return "127.0.0.1"
+
+    def _get_base_url_for_openclaw(self):
+        """取得供 OpenClaw 使用的 baseUrl"""
+        port = self.ent_port.get() or str(DEFAULT_PORT)
+        host = self._get_external_host()
+        return f"http://{host}:{port}/v1"
+
     def build_command(self):
         model = self.model_path.get().split("  (")[0]  # 去除大小標籤
         if not model or not os.path.isfile(model):
             return "# 請先選擇有效的 GGUF 模型"
 
+        llama_server = self._get_llama_server()
         parts = [
-            f'"{LLAMA_SERVER}"',
+            f'"{llama_server}"',
             f'-m "{model}"',
             f"-c {self.ent_ctx.get() or 8192}",
             f"-ngl {self.ent_ngl.get() or 99}",
@@ -1521,18 +1850,23 @@ class LlamaLauncherApp:
             f"--n-cpu-moe {self.ent_moe.get() or 32}",
             f"--cache-type-k {self.cb_k.get() or 'q4_0'}",
             f"--cache-type-v {self.cb_v.get() or 'q4_0'}",
-            f"--host 127.0.0.1",
+            f"--host {self._get_host()}",
             f"--port {self.ent_port.get() or DEFAULT_PORT}",
         ]
         
         # mmproj 多模態支援
         if self.var_mmproj.get() and self.mmproj_path.get():
-            # 從 models 中找完整路徑
-            mmproj_full = None
-            for m in self.models:
-                if m.get("mmproj") and m["mmproj"]["name"] == self.mmproj_path.get():
-                    mmproj_full = m["mmproj"]["path"]
-                    break
+            # 先嘗試手動瀏覽的全路徑
+            mmproj_full = self.mmproj_full_path.get().strip()
+            if mmproj_full and os.path.isfile(mmproj_full):
+                pass  # 已有效
+            else:
+                # 從 models 中找完整路徑
+                mmproj_full = None
+                for m in self.models:
+                    if m.get("mmproj") and m["mmproj"]["name"] == self.mmproj_path.get():
+                        mmproj_full = m["mmproj"]["path"]
+                        break
             if mmproj_full:
                 parts.append(f'-mm "{mmproj_full}"')
                 if self.var_mmproj_offload.get():
@@ -1562,11 +1896,12 @@ class LlamaLauncherApp:
 
     # ---------- 伺服器控制 ----------
     def run_server(self):
-        if not os.path.isfile(LLAMA_SERVER):
+        llama_server = self._get_llama_server()
+        if not os.path.isfile(llama_server):
             messagebox.showerror(
                 "❌ 找不到 llama-server",
                 "無法啟動伺服器：找不到 llama-server.exe\n"
-                f"預期路徑：\n{LLAMA_SERVER}",
+                f"預期路徑：\n{llama_server}",
             )
             return
 
@@ -1609,8 +1944,10 @@ class LlamaLauncherApp:
         self.update_cmd()
 
         try:
-            os.makedirs(LOG_DIR, exist_ok=True)
-            log_path = os.path.join(LOG_DIR, "llama_server.log")
+            log_dir = self._get_log_dir()
+            work_dir = self._get_work_dir()
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(log_dir, "llama_server.log")
             
             # 清理上一輪日誌防體積暴增
             if self.var_enable_logging.get():
@@ -1621,7 +1958,7 @@ class LlamaLauncherApp:
                         pass
 
             # 寫入 bat 檔再執行，避免 shell=True 引號問題
-            bat_path = os.path.join(LOG_DIR, "_launcher_start.bat")
+            bat_path = os.path.join(log_dir, "_launcher_start.bat")
             with open(bat_path, "w", encoding="utf-8") as f:
                 f.write("@echo off\n")
                 if self.var_enable_logging.get():
@@ -1641,14 +1978,14 @@ class LlamaLauncherApp:
             self.server_process = subprocess.Popen(
                 bat_path,
                 shell=True,
-                cwd=WORK_DIR,
+                cwd=work_dir,
                 creationflags=flags,
             )
             self.btn_run.config(state="disabled")
             self.btn_stop.config(state="normal")
             self.btn_unload.config(state="normal")
             self.lbl_status.config(
-                text=f"🟢 伺服器已啟動 | http://127.0.0.1:{port}",
+                text=f"🟢 伺服器已啟動 | http://{self._get_external_host()}:{port}",
                 foreground="green",
             )
             self.refresh_all_status()
